@@ -11,6 +11,8 @@ import re
 app_name = "Microsoft: Windows Server Service Configuration"
 DO_REGEX = True
 
+## Developer customization: Hardcoded exclusion list
+exclude_services_list = ['GISvc', 'IaasVmProvider','Windows Service Pack Installer update service','BMR Boot Service','Microsoft .NET Framework NGEN v4.0.30319_X86','Microsoft .NET Framework NGEN v4.0.30319_X64','NetBackup SAN Client Fibre Transport Service','ccmsetup','SeOS Agent','CA Access Control Agent Manager','SeOS Engine','CA Access Control Report Agent','SeOS TD','SeOS Watchdog','EsaEvCrawlerService','EsaEvRetrieverService','EsaExchangeCrawlerService','EsaEvRetrieverService','IGCBravaLicenseService','IGCJobProcessorService','EsaNsfCrawlerService','EsaNsfRetrieverService','EsaPstCrawlerService','EsaPstRetrieverService','AmazonSSMAgent','stisvc']
 
 def get_last_cached_request_result(self, key, is_concurrent, pickling=True):
   
@@ -225,6 +227,9 @@ try:
         sn = data['StartName']
         sm = data['StartMode']
         trigger_val = data['Trigger']
+        
+        # Developer logic: Retrieve DelayedAutostart if it exists in the parent data
+        delayedautostart = data.get('DelayedAutostart', {})
     
         # These are the lists that will be plugged into result_handler['oid_name']
         displayname = []
@@ -234,12 +239,20 @@ try:
         startmode = []
         bl_status = []
         trigger = []
+        monitored = [] # Developer logic: Added Monitored list
 
         for key in list(dn.keys()):
             # look at the resultset known as blocklist to see if this service is in there
             serviceName = (base64.b64decode(n.get(key, ""))).decode("utf-8")
             bl_status_val = is_service_on_blocklist(blocklist, serviceName, key)
          
+            # Developer logic: Check hardcoded exclude list
+            is_excluded = False
+            for exclude_pattern in exclude_services_list:
+                if re.match(exclude_pattern, serviceName):
+                    is_excluded = True
+                    break
+
             if (key in s) and (key in n) and (key in sn) and (key in sm) and (key in trigger_val):
                 eIndex = service_encoding(key)
                 name_parsed = service_encoding(n[key])
@@ -250,14 +263,32 @@ try:
                 name.append((eIndex, name_parsed))
                 state.append((eIndex, s[key]))
                 startname.append((eIndex, startname_parsed))
+                
+                # Developer Logic: Enhanced StartMode and Monitored detection
                 start_mode = sm[key]
-                if trigger_val[key] == 'True':
+                is_trigger = trigger_val[key] == 'True'
+                is_delayed = delayedautostart.get(key, 'False') == 'True'
+                monitored_val = 'Yes' # Assume monitored by default
+
+                if is_trigger and not is_delayed:
                     start_mode += " (Trigger Start)"
-                    trigger.append((eIndex, 'True'))
-                else:
-                    trigger.append((eIndex, 'False'))
+                    monitored_val = 'No'
+                elif is_trigger and is_delayed:
+                    start_mode += " (Delayed Start, Trigger Start)"
+                    monitored_val = 'No'
+                elif not is_trigger and is_delayed:
+                    start_mode += " (Delayed Start)"
+                    monitored_val = 'No'
+                
+                # Final check against hardcoded exclusion list
+                if monitored_val == 'Yes' and is_excluded:
+                    monitored_val = 'No'
+
+                trigger.append((eIndex, 'True' if is_trigger else 'False'))
                 startmode.append((eIndex, start_mode))
                 bl_status.append((eIndex, bl_status_val))
+                monitored.append((eIndex, monitored_val))
+                
             else:
                 self.internal_alerts.append((COLLECT_ERROR, "[%s] for device %s [%s] IP: %s Error: Data Inconsistency in PowerShell results" % (self.app_id, self.name, self.did, self.ip)))
                 
@@ -269,6 +300,7 @@ try:
         result_handler['StartMode'] = startmode
         result_handler['Trigger'] = trigger
         result_handler['BlocklistStatus'] = bl_status
+        result_handler['monitored'] = monitored # Developer logic: Output monitored OID
 except AttributeError:
     pass
 except Exception as err:
